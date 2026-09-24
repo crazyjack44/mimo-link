@@ -76,7 +76,17 @@ class Handler(SimpleHTTPRequestHandler):
 
     def end_headers(self) -> None:
         self.send_header("Cache-Control", "no-store, must-revalidate")
+        # Allow the UI to be opened from any local origin (preview / file / other port)
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization")
+        self.send_header("Access-Control-Max-Age", "600")
         super().end_headers()
+
+    def do_OPTIONS(self) -> None:
+        # CORS preflight for cross-origin UI → 127.0.0.1:8765
+        self.send_response(204)
+        self.end_headers()
 
     def log_message(self, fmt: str, *args) -> None:
         sys.stderr.write("[http] " + (fmt % args) + "\n")

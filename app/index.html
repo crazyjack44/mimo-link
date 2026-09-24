@@ -1585,17 +1585,28 @@
   async function api(path, options = {}) {
     const tries = [path];
     // When opened from file:// or a non-app origin (e.g. preview), fall back to the local app server
-    if (!/^https?:\/\/127\.0\.0\.1:8765\//i.test(location.href) && !/^https?:\/\/localhost:8765\//i.test(location.href)) {
+    const onAppHost = /^https?:\/\/(127\.0\.0\.1|localhost):8765\//i.test(location.href);
+    if (!onAppHost) {
       tries.push("http://127.0.0.1:8765" + path);
     }
     let lastErr = null;
     for (const url of tries) {
       try {
-        const res = await fetch(url, {
-          headers: { "Content-Type": "application/json" },
-          ...options,
-        });
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const method = (options.method || "GET").toUpperCase();
+        const headers = { ...(options.headers || {}) };
+        // Avoid CORS preflight on GET
+        if (method !== "GET" && method !== "HEAD" && options.body) {
+          headers["Content-Type"] = headers["Content-Type"] || "application/json";
+        }
+        const res = await fetch(url, { ...options, headers });
+        if (!res.ok) {
+          let msg = `HTTP ${res.status}`;
+          try {
+            const j = await res.json();
+            if (j && j.error) msg += `: ${j.error}`;
+          } catch {}
+          throw new Error(msg);
+        }
         return await res.json();
       } catch (e) {
         lastErr = e;
@@ -2185,8 +2196,8 @@
       if (ak) body.api_key = ak;
       let report;
       if (state.demo) {
-        toast("当前是演示模式，不会真正写入 Codex。请打开 http://127.0.0.1:8765", "err");
-        report = { action: "route", routed: false, error: "demo mode — server unreachable" };
+        toast("演示模式：未连接到 http://127.0.0.1:8765 ，请启动服务后用该地址打开", "err");
+        report = { action: "route", routed: false, error: "demo mode — 服务未连接 (http://127.0.0.1:8765)" };
       } else {
         report = await api("/api/route", { method: "POST", body: JSON.stringify(body) });
       }
