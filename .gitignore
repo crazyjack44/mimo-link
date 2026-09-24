@@ -12,6 +12,10 @@ __pycache__/
 .venv/
 venv/
 
+# pyinstaller
+build/
+dist/
+
 # os / editor
 .DS_Store
 Thumbs.db
