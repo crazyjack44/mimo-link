@@ -264,16 +264,21 @@ def mask(token: str) -> str:
 
 # --------------------------------------------------------------------------- hermes config
 
-def _hermes_bin() -> str:
-    exe = shutil.which("hermes")
-    if not exe:
-        raise RuntimeError("`hermes` not found on PATH")
-    return exe
+def _hermes_bin() -> str | None:
+    """Hermes CLI is optional — Codex / sync / keys must work without it."""
+    return shutil.which("hermes")
 
 
 def read_alias() -> dict:
-    out = subprocess.run([_hermes_bin(), "config", "get", f"model_aliases.{ALIAS_NAME}"],
-                         capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120)
+    """Read Hermes model alias. Returns {} when hermes CLI is missing."""
+    exe = _hermes_bin()
+    if not exe:
+        return {}
+    try:
+        out = subprocess.run([exe, "config", "get", f"model_aliases.{ALIAS_NAME}"],
+                             capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120)
+    except Exception:
+        return {}
     entry = {}
     for line in out.stdout.splitlines():
         m = re.match(r"\s*(model|base_url|provider|key_env):\s*(\S+)", line)
@@ -283,10 +288,19 @@ def read_alias() -> dict:
 
 
 def write_alias(model: str, base_url: str) -> None:
+    exe = _hermes_bin()
+    if not exe:
+        raise RuntimeError(
+            "`hermes` not found on PATH — 仅「路由至 Hermes」需要它；"
+            "Codex / 同步 / Key 不依赖 Hermes")
     payload = json.dumps({"model": model, "provider": "custom",
                           "base_url": base_url, "key_env": ENV_KEY})
-    subprocess.run([_hermes_bin(), "config", "set", f"model_aliases.{ALIAS_NAME}", payload],
+    subprocess.run([exe, "config", "set", f"model_aliases.{ALIAS_NAME}", payload],
                    capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120)
+
+
+def hermes_available() -> bool:
+    return _hermes_bin() is not None
 
 
 # --------------------------------------------------------------------------- codex config
@@ -673,7 +687,12 @@ def run_action(
     api_key: str | None = None,
 ) -> dict:
     home = hermes_home()
-    result: dict = {"action": action, "alias": ALIAS_NAME, "hermes_home": str(home)}
+    result: dict = {
+        "action": action,
+        "alias": ALIAS_NAME,
+        "data_dir": str(data_dir()),
+        "hermes_available": hermes_available(),
+    }
 
     directory = Path(install_dir) if install_dir else discover_install_dir()
     pids = mimo_pids()
@@ -683,9 +702,10 @@ def run_action(
     result["route_target"] = route_target
 
     if action == "status":
-        token = read_env_token(home)
+        token = read_env_token()
         result["env_token"] = mask(token)
-        result["alias_config"] = read_alias()
+        result["hermes_available"] = hermes_available()
+        result["alias_config"] = read_alias()  # {} if hermes CLI missing
         result["codex_config"] = read_codex_summary()
         port, models = (None, None)
         if token and pids:
@@ -802,9 +822,15 @@ def run_action(
             return result
 
         write_token = (api_key or "").strip() or token
-        if (api_key or "").strip():
-            write_env_token(write_token, home)
-        write_alias(new_model, new_base)
+        if route_target == "hermes":
+            if not hermes_available():
+                result["error"] = (
+                    "`hermes` not found on PATH — 无法路由到 Hermes。"
+                    "可改选「Codex」，或安装 hermes CLI。同步 / Key / Codex 均不依赖 Hermes。")
+                return result
+            if (api_key or "").strip():
+                write_env_token(write_token, home)
+            write_alias(new_model, new_base)
         result.update({
             "token": mask(write_token),
             "live_port": port,

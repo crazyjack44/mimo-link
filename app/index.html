@@ -1641,6 +1641,7 @@
     const base = alias.base_url || "";
     const linked = d.linked;
     const cx = d.codex_config || {};
+    const hermesOk = d.hermes_available !== false;
 
     if (target === "codex") {
       const onBridge = String(cx.base_url || "").includes("8765");
@@ -1657,9 +1658,16 @@
           detail: `请检查 ~/.codex：base=${cx.base_url || "—"} wire=${cx.wire_api || "—"} key=${hasKey ? "有" : "无"}`,
         };
       }
-      return { cls: "err", text: "Codex 未路由", detail: "到「同步」页 ① 同步端点 → ② 路由至 Codex" };
+      return { cls: "err", text: "Codex 未路由", detail: "到「同步」页 ① 同步端点 → ② 路由至 Codex（无需 Hermes）" };
     }
 
+    if (!hermesOk) {
+      return {
+        cls: "warn",
+        text: "Hermes 未安装",
+        detail: "未找到 hermes CLI。可改选 Codex；同步 / Key / Codex 均不依赖 Hermes",
+      };
+    }
     if (linked) {
       return { cls: "ok", text: "Hermes 已连接", detail: `Hermes 已指向实时端口 ${live}，可调用 Desktop 额度` };
     }
@@ -1715,7 +1723,7 @@
     $("d-model").textContent = alias.model || "—";
     $("d-base").textContent = base || "—";
     $("d-keyenv").textContent = alias.key_env || "MIMO_LLM_SERVER_TOKEN";
-    $("d-home").textContent = d.hermes_home || "—";
+    $("d-home").textContent = d.data_dir || d.hermes_home || "插件目录";
     $("d-install").textContent = d.install_dir || "—";
 
     const models = d.models || [];
