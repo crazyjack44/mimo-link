@@ -11,6 +11,7 @@ import json
 import secrets
 import time
 import uuid
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from mimo_link_core import data_dir
@@ -19,6 +20,8 @@ from pricing import cost_cny, tokens_to_yuan
 STORE_NAME = "mimo-link-keys.json"
 KEY_PREFIX = "mlk_"
 _OVERRIDE: Path | None = None
+# Keep raw usage events long enough for the 30-day chart window.
+USAGE_EVENT_RETENTION_MS = 31 * 24 * 3600 * 1000
 
 
 def store_path() -> Path:
@@ -149,6 +152,102 @@ def usage_totals() -> dict:
     }
 
 
+def _prune_usage_events(data: dict, now_ms: int | None = None) -> None:
+    events = data.get("usage_events")
+    if not isinstance(events, list):
+        data["usage_events"] = []
+        return
+    cutoff = (now_ms if now_ms is not None else int(time.time() * 1000)) - USAGE_EVENT_RETENTION_MS
+    data["usage_events"] = [e for e in events if int((e or {}).get("ts") or 0) >= cutoff]
+
+
+def usage_series(range_key: str = "30d") -> dict:
+    """Aggregate usage events into chart buckets.
+
+    range_key:
+      - "1d" / "day"  → last 24h, 30-minute buckets (48 points)
+      - "30d" / "30"  → last 30 days, daily buckets (30 points)
+    """
+    data = _load()
+    events = data.get("usage_events") or []
+    now = datetime.now()
+    now_ms = int(now.timestamp() * 1000)
+
+    points: list[dict] = []
+    if range_key in ("1d", "day", "today"):
+        # Last 24h of 30-minute buckets; last bucket always contains "now".
+        last_start = now.replace(second=0, microsecond=0, minute=0 if now.minute < 30 else 30)
+        start = last_start - timedelta(minutes=30 * 47)
+        bucket_ms = 30 * 60 * 1000
+        n = 48
+        labels = []
+        for i in range(n):
+            ts = start + timedelta(minutes=30 * i)
+            labels.append(ts)
+            points.append({
+                "ts": int(ts.timestamp() * 1000),
+                "label": ts.strftime("%H:%M"),
+                "input": 0,
+                "output": 0,
+                "total": 0,
+                "cny": 0.0,
+            })
+    else:
+        # Last 30 calendar days (including today), daily buckets.
+        start_day = (now - timedelta(days=29)).replace(hour=0, minute=0, second=0, microsecond=0)
+        bucket_ms = 24 * 3600 * 1000
+        n = 30
+        labels = []
+        for i in range(n):
+            ts = start_day + timedelta(days=i)
+            labels.append(ts)
+            points.append({
+                "ts": int(ts.timestamp() * 1000),
+                "label": ts.strftime("%m-%d"),
+                "input": 0,
+                "output": 0,
+                "total": 0,
+                "cny": 0.0,
+            })
+
+    start_ts = points[0]["ts"] if points else now_ms
+    # Align day bucket key via local calendar date for 30d, floor-to-30min for 1d.
+    for e in events:
+        ts = int((e or {}).get("ts") or 0)
+        if ts < start_ts:
+            continue
+        i_tok = int((e or {}).get("input") or 0)
+        o_tok = int((e or {}).get("output") or 0)
+        if not i_tok and not o_tok:
+            continue
+        dt = datetime.fromtimestamp(ts / 1000.0)
+        if range_key in ("1d", "day", "today"):
+            idx = int((ts - start_ts) // bucket_ms)
+        else:
+            day0 = labels[0].replace(hour=0, minute=0, second=0, microsecond=0)
+            idx = (dt.replace(hour=0, minute=0, second=0, microsecond=0) - day0).days
+        if idx < 0 or idx >= len(points):
+            continue
+        points[idx]["input"] += i_tok
+        points[idx]["output"] += o_tok
+        points[idx]["total"] += i_tok + o_tok
+
+    for p in points:
+        p["cny"] = round(cost_cny(p["input"], p["output"]), 6)
+
+    window_in = sum(p["input"] for p in points)
+    window_out = sum(p["output"] for p in points)
+    return {
+        "range": "1d" if range_key in ("1d", "day", "today") else "30d",
+        "bucket": "30m" if range_key in ("1d", "day", "today") else "1d",
+        "points": points,
+        "window_input": window_in,
+        "window_output": window_out,
+        "window_total": window_in + window_out,
+        "window_cny": cost_cny(window_in, window_out),
+    }
+
+
 def create_key(name: str, quota: int | None = None) -> dict:
     name = (name or "").strip() or "untitled"
     token = KEY_PREFIX + secrets.token_hex(24)
@@ -221,6 +320,10 @@ def reset_usage(key_id: str | None = None) -> int:
         k["used_output"] = 0
         k["used_total"] = 0
         n += 1
+    if key_id:
+        data["usage_events"] = [e for e in (data.get("usage_events") or []) if (e or {}).get("key_id") != key_id]
+    else:
+        data["usage_events"] = []
     _save(data)
     return n
 
@@ -244,9 +347,18 @@ def record_usage(key_id: str, input_tokens: int, output_tokens: int) -> None:
             continue
         i = max(0, int(input_tokens or 0))
         o = max(0, int(output_tokens or 0))
+        now = int(time.time() * 1000)
         k["used_input"] = int(k.get("used_input") or 0) + i
         k["used_output"] = int(k.get("used_output") or 0) + o
         k["used_total"] = int(k.get("used_total") or 0) + i + o
-        k["last_used_at"] = int(time.time() * 1000)
+        k["last_used_at"] = now
+        if i or o:
+            data.setdefault("usage_events", []).append({
+                "ts": now,
+                "key_id": key_id,
+                "input": i,
+                "output": o,
+            })
+            _prune_usage_events(data, now)
         _save(data)
         return

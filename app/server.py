@@ -51,6 +51,7 @@ from key_store import (  # noqa: E402
     reset_usage,
     store_path,
     update_key,
+    usage_series,
     usage_totals,
 )
 from pricing import (  # noqa: E402
@@ -323,6 +324,13 @@ class Handler(SimpleHTTPRequestHandler):
 
             if path == "/api/usage" and self.command == "GET":
                 self._json(200, usage_totals())
+                return True
+
+            if path == "/api/usage/series" and self.command == "GET":
+                from urllib.parse import parse_qs
+                qs = {k: v[0] for k, v in parse_qs(urlparse(self.path).query).items()}
+                range_key = (qs.get("range") or qs.get("range_key") or "30d").strip().lower()
+                self._json(200, usage_series(range_key))
                 return True
 
             if path == "/api/pricing" and self.command == "GET":

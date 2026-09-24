@@ -949,6 +949,50 @@
     content: "（文件不存在或为空）";
     color: var(--ink-tertiary);
   }
+
+  /* Usage chart */
+  .usage-chart-card .section-head {
+    margin-bottom: 8px;
+  }
+
+  .usage-chart-wrap {
+    position: relative;
+    width: 100%;
+    height: 220px;
+  }
+
+  .usage-chart-wrap canvas {
+    width: 100%;
+    height: 100%;
+    display: block;
+  }
+
+  .usage-chart-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 14px;
+    margin-top: 12px;
+    font-size: 12px;
+    color: var(--ink-secondary);
+  }
+
+  .usage-chart-meta span b {
+    color: var(--ink);
+    font-weight: 650;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .usage-chart-empty {
+    position: absolute;
+    inset: 0;
+    display: none;
+    place-items: center;
+    color: var(--ink-tertiary);
+    font-size: 13px;
+    pointer-events: none;
+  }
+
+  .usage-chart-empty.show { display: grid; }
 </style>
 </head>
 <body>
@@ -1049,6 +1093,30 @@
           <div class="card-label">费用（元）</div>
           <div class="card-value mono" id="k-usage-cny">¥0.00</div>
           <div class="card-meta" id="m-usage-cny">按定价折算</div>
+        </div>
+      </div>
+
+      <div class="section">
+        <div class="card usage-chart-card">
+          <div class="section-head">
+            <h2 class="section-title">用量消耗趋势</h2>
+            <div class="segment" id="usage-range-seg">
+              <button class="active" data-range="30d">近30天</button>
+              <button data-range="1d">最近一天</button>
+            </div>
+          </div>
+          <div class="hint" id="usage-chart-hint" style="margin-bottom:10px;">近30天 · 按天汇总</div>
+          <div class="usage-chart-wrap">
+            <canvas id="usage-chart" width="900" height="220"></canvas>
+            <div class="usage-chart-empty" id="usage-chart-empty">暂无用量数据</div>
+          </div>
+          <div class="usage-chart-meta">
+            <span>总消耗 <b id="usage-win-total">0</b></span>
+            <span>输入 <b id="usage-win-in">0</b></span>
+            <span>输出 <b id="usage-win-out">0</b></span>
+            <span>费用 <b id="usage-win-cny">¥0.00</b></span>
+            <span style="color:var(--ink-tertiary)">— 蓝线：总消耗 · 绿线：输入 · 橙线：输出</span>
+          </div>
         </div>
       </div>
 
@@ -1418,6 +1486,8 @@
     timer: null,
     demo: false,
     target: "hermes",
+    usageRange: "30d",
+    usageSeries: null,
   };
 
   function targetLabel() {
@@ -1432,6 +1502,180 @@
   function fmtCny(n) {
     const v = Number(n) || 0;
     return "¥" + (v < 1 ? v.toFixed(4) : v.toFixed(2));
+  }
+
+  function cssVar(name, fallback) {
+    const v = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+    return v || fallback;
+  }
+
+  function drawUsageChart(series) {
+    const canvas = $("usage-chart");
+    if (!canvas) return;
+    const empty = $("usage-chart-empty");
+    const dpr = window.devicePixelRatio || 1;
+    const cssW = canvas.clientWidth || canvas.parentElement.clientWidth || 900;
+    const cssH = canvas.clientHeight || 220;
+    canvas.width = Math.max(1, Math.round(cssW * dpr));
+    canvas.height = Math.max(1, Math.round(cssH * dpr));
+    const ctx = canvas.getContext("2d");
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, cssW, cssH);
+
+    const points = (series && series.points) || [];
+    const hasData = points.some((p) => (p.total || 0) > 0);
+    if (empty) empty.classList.toggle("show", !points.length || !hasData);
+
+    const pad = { l: 44, r: 12, t: 14, b: 28 };
+    const w = cssW - pad.l - pad.r;
+    const h = cssH - pad.t - pad.b;
+    const ink2 = cssVar("--ink-secondary", "#6e6e73");
+    const ink3 = cssVar("--ink-tertiary", "#aeaeb2");
+    const border = cssVar("--border-strong", "rgba(0,0,0,0.1)");
+    const accent = cssVar("--accent", "#0071e3");
+    const success = cssVar("--success", "#34c759");
+    const warn = cssVar("--warn", "#ff9f0a");
+
+    const maxV = Math.max(1, ...points.map((p) => p.total || 0));
+    // nice top label
+    const yMax = maxV * 1.15;
+    const n = points.length || 1;
+    const xAt = (i) => pad.l + (n === 1 ? w / 2 : (w * i) / (n - 1));
+    const yAt = (v) => pad.t + h - (h * (v || 0)) / yMax;
+
+    // grid + y labels
+    ctx.strokeStyle = border;
+    ctx.fillStyle = ink3;
+    ctx.font = "11px -apple-system, PingFang SC, Microsoft YaHei, sans-serif";
+    ctx.textAlign = "right";
+    ctx.textBaseline = "middle";
+    const gridN = 4;
+    for (let g = 0; g <= gridN; g++) {
+      const y = pad.t + (h * g) / gridN;
+      ctx.beginPath();
+      ctx.moveTo(pad.l, y);
+      ctx.lineTo(pad.l + w, y);
+      ctx.globalAlpha = g === gridN ? 1 : 0.55;
+      ctx.stroke();
+      ctx.globalAlpha = 1;
+      const val = yMax * (1 - g / gridN);
+      ctx.fillText(fmtNum(Math.round(val)), pad.l - 8, y);
+    }
+
+    // x labels (sparse)
+    ctx.textAlign = "center";
+    ctx.textBaseline = "top";
+    const maxLabels = Math.max(2, Math.floor(cssW / 70));
+    const step = Math.max(1, Math.ceil(n / maxLabels));
+    for (let i = 0; i < n; i += step) {
+      ctx.fillText(points[i].label || "", xAt(i), pad.t + h + 8);
+    }
+
+    function drawLine(key, color, fillAlpha) {
+      if (!points.length) return;
+      ctx.beginPath();
+      points.forEach((p, i) => {
+        const x = xAt(i);
+        const y = yAt(p[key] || 0);
+        if (i === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+      });
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 2;
+      ctx.lineJoin = "round";
+      ctx.lineCap = "round";
+      ctx.stroke();
+
+      if (fillAlpha > 0) {
+        ctx.lineTo(xAt(n - 1), pad.t + h);
+        ctx.lineTo(xAt(0), pad.t + h);
+        ctx.closePath();
+        ctx.globalAlpha = fillAlpha;
+        ctx.fillStyle = color;
+        ctx.fill();
+        ctx.globalAlpha = 1;
+      }
+
+      // dots on non-zero peaks
+      ctx.fillStyle = color;
+      points.forEach((p, i) => {
+        const v = p[key] || 0;
+        if (v <= 0) return;
+        if (n > 15 && i % step !== 0 && v < maxV * 0.35) return;
+        ctx.beginPath();
+        ctx.arc(xAt(i), yAt(v), 2.4, 0, Math.PI * 2);
+        ctx.fill();
+      });
+    }
+
+    drawLine("total", accent, 0.08);
+    drawLine("input", success, 0);
+    drawLine("output", warn, 0);
+  }
+
+  function applyUsageSeries(series) {
+    state.usageSeries = series;
+    const is1d = (series && series.range) === "1d" || state.usageRange === "1d";
+    const hint = $("usage-chart-hint");
+    if (hint) {
+      hint.textContent = is1d ? "最近一天 · 半小时粒度（48 点）" : "近30天 · 按天汇总（30 点）";
+    }
+    if ($("usage-win-total")) $("usage-win-total").textContent = fmtNum((series && series.window_total) || 0);
+    if ($("usage-win-in")) $("usage-win-in").textContent = fmtNum((series && series.window_input) || 0);
+    if ($("usage-win-out")) $("usage-win-out").textContent = fmtNum((series && series.window_output) || 0);
+    if ($("usage-win-cny")) $("usage-win-cny").textContent = fmtCny((series && series.window_cny) || 0);
+    drawUsageChart(series);
+  }
+
+  function demoUsageSeries(range) {
+    const is1d = range === "1d";
+    const points = [];
+    const now = Date.now();
+    const stepMs = is1d ? 30 * 60 * 1000 : 24 * 3600 * 1000;
+    const n = is1d ? 48 : 30;
+    for (let i = 0; i < n; i++) {
+      const t = now - (n - 1 - i) * stepMs;
+      const d = new Date(t);
+      const wave = Math.sin(i / 3) * 0.5 + 0.6;
+      const total = Math.max(0, Math.round((is1d ? 80 : 400) * wave * (0.4 + (i % 5) * 0.15)));
+      const input = Math.round(total * 0.65);
+      const output = total - input;
+      points.push({
+        ts: t,
+        label: is1d ? d.toTimeString().slice(0, 5) : `${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`,
+        input,
+        output,
+        total,
+        cny: 0,
+      });
+    }
+    const window_input = points.reduce((s, p) => s + p.input, 0);
+    const window_output = points.reduce((s, p) => s + p.output, 0);
+    return {
+      range: is1d ? "1d" : "30d",
+      bucket: is1d ? "30m" : "1d",
+      points,
+      window_input,
+      window_output,
+      window_total: window_input + window_output,
+      window_cny: 0.12,
+    };
+  }
+
+  async function loadUsageSeries() {
+    const range = state.usageRange || "30d";
+    try {
+      const series = await api("/api/usage/series?range=" + encodeURIComponent(range));
+      applyUsageSeries(series);
+      return series;
+    } catch (e) {
+      if (state.demo) {
+        applyUsageSeries(demoUsageSeries(range));
+      } else {
+        applyUsageSeries({ range, bucket: range === "1d" ? "30m" : "1d", points: [], window_input: 0, window_output: 0, window_total: 0, window_cny: 0 });
+      }
+      return null;
+    }
   }
 
   function currentApiKey() {
@@ -1619,6 +1863,7 @@
     document.documentElement.setAttribute("data-theme", dark ? "dark" : "light");
     $("dark-toggle").classList.toggle("on", dark);
     try { localStorage.setItem("ml-theme", dark ? "dark" : "light"); } catch {}
+    if (state.usageSeries) drawUsageChart(state.usageSeries);
   }
 
   function switchView(view) {
@@ -1939,12 +2184,14 @@
       state.demo = false;
       state.data = d;
       renderOverview(d);
+      loadUsageSeries();
       if (!quiet) log(`状态已刷新 · port=${d.live_port ?? "-"} · linked=${d.linked}`);
       return d;
     } catch (e) {
       state.demo = true;
       state.data = { ...DEMO, usage: { total_tokens: 12840, input_tokens: 9210, output_tokens: 3630, key_count: 1 } };
       renderOverview(state.data);
+      loadUsageSeries();
       fillResult(DEMO);
       if (!quiet) {
         log(`API 不可用（${e.message}），已载入演示数据`);
@@ -2470,6 +2717,7 @@
     await api("/api/keys", { method: "POST", body: JSON.stringify({ action: "reset_usage" }) });
     toast("用量已重置", "ok");
     await loadKeys();
+    await loadUsageSeries();
     await loadStatus({ quiet: true });
   });
   if ($("copy-token")) $("copy-token").addEventListener("click", onCopyToken);
@@ -2506,6 +2754,19 @@
       if (state.data) renderOverview(state.data);
       else loadStatus({ quiet: true });
     });
+  });
+
+  document.querySelectorAll("#usage-range-seg button").forEach((b) => {
+    b.addEventListener("click", () => {
+      document.querySelectorAll("#usage-range-seg button").forEach((x) => x.classList.remove("active"));
+      b.classList.add("active");
+      state.usageRange = b.dataset.range || "30d";
+      loadUsageSeries();
+    });
+  });
+
+  window.addEventListener("resize", () => {
+    if (state.usageSeries) drawUsageChart(state.usageSeries);
   });
 
   // Init
