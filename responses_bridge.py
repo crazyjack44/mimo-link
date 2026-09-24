@@ -22,6 +22,37 @@ def _rid(prefix: str) -> str:
     return f"{prefix}_{uuid.uuid4().hex[:24]}"
 
 
+def extract_usage(usage: dict | None) -> tuple[int, int, int]:
+    """Normalize provider usage into (input, output, total).
+
+    Handles both Chat Completions (prompt/completion_tokens) and Responses
+    (input/output_tokens) field names. Missing total is derived as in+out.
+    A present zero is kept as zero — never fall through via `or`.
+    """
+    if not isinstance(usage, dict) or not usage:
+        return 0, 0, 0
+
+    def pick(*keys: str) -> int | None:
+        for k in keys:
+            if k in usage and usage[k] is not None:
+                try:
+                    return int(usage[k])
+                except (TypeError, ValueError):
+                    return None
+        return None
+
+    inp = pick("prompt_tokens", "input_tokens")
+    out = pick("completion_tokens", "output_tokens")
+    total = pick("total_tokens")
+    inp = 0 if inp is None else max(0, inp)
+    out = 0 if out is None else max(0, out)
+    if total is None:
+        total = inp + out
+    else:
+        total = max(0, total)
+    return inp, out, total
+
+
 # --------------------------------------------------------------------- request
 
 def responses_to_chat(body: dict) -> dict:
@@ -202,6 +233,7 @@ def chat_to_responses(chat: dict, body: dict) -> dict:
     output.extend(tool_items)
 
     usage = chat.get("usage") or {}
+    inp, out, total = extract_usage(usage)
     return {
         "id": _rid("resp"),
         "object": "response",
@@ -212,9 +244,11 @@ def chat_to_responses(chat: dict, body: dict) -> dict:
         "output": output,
         "parallel_tool_calls": True,
         "usage": {
-            "input_tokens": usage.get("prompt_tokens") or 0,
-            "output_tokens": usage.get("completion_tokens") or 0,
-            "total_tokens": usage.get("total_tokens") or 0,
+            "input_tokens": inp,
+            "output_tokens": out,
+            "total_tokens": total,
+            "input_tokens_details": {"cached_tokens": 0},
+            "output_tokens_details": {"reasoning_tokens": 0},
         },
         "error": None,
         "incomplete_details": None,
@@ -229,6 +263,7 @@ def chat_chunks_to_response_events(chunks: list[dict], body: dict) -> list[tuple
     tool_acc: dict[int, dict] = {}
     model = body.get("model") or ""
     finish_reason = "stop"
+    usage = (0, 0, 0)
 
     for ch in chunks:
         if ch.get("model"):
@@ -249,6 +284,13 @@ def chat_chunks_to_response_events(chunks: list[dict], body: dict) -> list[tuple
                 acc["name"] += fn["name"]
             if fn.get("arguments"):
                 acc["arguments"] += fn["arguments"]
+        if ch.get("usage"):
+            parsed = extract_usage(ch.get("usage"))
+            if any(parsed):
+                usage = parsed
+
+    if not any(usage):
+        usage = (0, 0, len("".join(text_parts)) // 4 or (1 if text_parts else 0))
 
     text = "".join(text_parts)
     created = _now()
@@ -334,6 +376,13 @@ def chat_chunks_to_response_events(chunks: list[dict], body: dict) -> list[tuple
     if finish_reason == "length":
         final["status"] = "incomplete"
         final["incomplete_details"] = {"reason": "max_output_tokens"}
+    final["usage"] = {
+        "input_tokens": usage[0],
+        "output_tokens": usage[1],
+        "total_tokens": usage[2] or (usage[0] + usage[1]),
+        "input_tokens_details": {"cached_tokens": 0},
+        "output_tokens_details": {"reasoning_tokens": 0},
+    }
     events.append(ev("response.completed", {"response": final}))
     return events
 

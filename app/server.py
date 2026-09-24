@@ -43,6 +43,7 @@ from mimo_link_core import (  # noqa: E402
     env_file_path,
     find_endpoint,
     get_plain_token,
+    is_hidden_model,
     mask,
     mint_llm_server_token,
     mimo_pids,
@@ -77,6 +78,7 @@ from responses_bridge import (  # noqa: E402
     call_mimo_chat_stream,
     chat_chunks_to_response_events,
     chat_to_responses,
+    extract_usage,
     responses_to_chat,
 )
 
@@ -433,27 +435,29 @@ class Handler(SimpleHTTPRequestHandler):
     def _track_usage(self, key: dict | None, chat: dict | None) -> None:
         if not key or not isinstance(chat, dict):
             return
-        usage = chat.get("usage") or {}
-        record_usage(
-            key["id"],
-            int(usage.get("prompt_tokens") or usage.get("input_tokens") or 0),
-            int(usage.get("completion_tokens") or usage.get("output_tokens") or 0),
-        )
+        inp, out, _ = extract_usage(chat.get("usage"))
+        if inp or out:
+            record_usage(key["id"], inp, out)
 
     def _track_usage_stream(self, key: dict | None, chunks: list[dict]) -> None:
         if not key:
             return
-        inp = out = 0
+        # Prefer the authoritative usage object (typically the final chunk).
+        # Never mix it with per-delta estimates — that double-counts output.
+        real = (0, 0, 0)
+        est_out = 0
         for ch in chunks or []:
-            usage = (ch or {}).get("usage") or {}
+            usage = (ch or {}).get("usage")
             if usage:
-                inp += int(usage.get("prompt_tokens") or usage.get("input_tokens") or 0)
-                out += int(usage.get("completion_tokens") or usage.get("output_tokens") or 0)
-            else:
-                delta = ((ch or {}).get("choices") or [{}])[0].get("delta") or {}
-                # rough fallback if upstream omits usage: count completion chars/4
-                if delta.get("content"):
-                    out += max(1, len(str(delta["content"])) // 4)
+                parsed = extract_usage(usage)
+                if any(parsed):
+                    real = parsed
+                continue
+            # rough fallback only when upstream omits usage entirely
+            delta = ((ch or {}).get("choices") or [{}])[0].get("delta") or {}
+            if delta.get("content"):
+                est_out += max(1, len(str(delta["content"])) // 4)
+        inp, out = (real[0], real[1]) if any(real) else (0, est_out)
         if inp or out:
             record_usage(key["id"], inp, out)
 
@@ -467,6 +471,15 @@ class Handler(SimpleHTTPRequestHandler):
             try:
                 with urllib.request.urlopen(req, timeout=5) as r:
                     body = r.read()
+                # Hide non-public provider models from external discovery.
+                try:
+                    payload = json.loads(body.decode("utf-8"))
+                    if isinstance(payload, dict) and isinstance(payload.get("data"), list):
+                        payload["data"] = [m for m in payload["data"]
+                                           if not is_hidden_model((m or {}).get("id") if isinstance(m, dict) else m)]
+                        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+                except Exception:
+                    pass
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")
                 self.send_header("Content-Length", str(len(body)))
@@ -483,6 +496,9 @@ class Handler(SimpleHTTPRequestHandler):
                 self._json(code, {"error": err})
                 return True
             body = self._read_body()
+            if is_hidden_model(body.get("model")):
+                self._json(404, {"error": {"code": "model_not_found", "message": "model not found"}})
+                return True
             base, token = self._upstream()
             if not base:
                 self._json(503, {"error": "MiMo Desktop endpoint not ready — open MiMo Link and run 同步端点"})
@@ -528,6 +544,9 @@ class Handler(SimpleHTTPRequestHandler):
                 self._json(code, {"error": err})
                 return True
             body = self._read_body()
+            if is_hidden_model(body.get("model")):
+                self._json(404, {"error": {"code": "model_not_found", "message": "model not found"}})
+                return True
             base, token = self._upstream()
             if not base:
                 self._json(503, {"error": "MiMo Desktop endpoint not ready"})

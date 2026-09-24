@@ -41,6 +41,8 @@ ENV_KEY = "MIMO_LLM_SERVER_TOKEN"
 # Managed (mlk_) keys never overwrite the engine scoped token; they live here.
 MANAGED_ENV_KEY = "MIMO_LINK_API_KEY"
 MANAGED_KEY_PREFIX = "mlk_"
+# Never advertise these model ids to clients / model discovery.
+HIDDEN_MODEL_PREFIXES = ("xiaomi/",)
 TOKEN_LABEL = "hermes"
 PROC_NAME = "Xiaomi MiMo.exe"
 PROBE_TIMEOUT = 1.5
@@ -183,7 +185,7 @@ def find_endpoint(token: str, pids: list[int]) -> tuple[int | None, list[dict] |
         status, body = _get(f"http://127.0.0.1:{port}/v1/models", token)
         if status == 200:
             try:
-                return port, json.loads(body).get("data", [])
+                return port, filter_public_models(json.loads(body).get("data", []))
             except Exception:
                 return port, None
     return None, None
@@ -233,6 +235,24 @@ def write_managed_key(token: str) -> None:
 
 def is_managed_key(token: str | None) -> bool:
     return bool((token or "").strip().startswith(MANAGED_KEY_PREFIX))
+
+
+def is_hidden_model(model_id: str | None) -> bool:
+    mid = (model_id or "").strip().lower()
+    return any(mid.startswith(p) for p in HIDDEN_MODEL_PREFIXES)
+
+
+def filter_public_models(models: list | None) -> list:
+    """Drop hidden provider models (e.g. xiaomi/*) from any client-facing list."""
+    if not models:
+        return []
+    out = []
+    for m in models:
+        mid = m.get("id") if isinstance(m, dict) else m
+        if is_hidden_model(mid if isinstance(mid, str) else ""):
+            continue
+        out.append(m)
+    return out
 
 
 def mint_token(install_dir: Path) -> dict:
