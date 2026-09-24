@@ -1583,12 +1583,25 @@
   }
 
   async function api(path, options = {}) {
-    const res = await fetch(path, {
-      headers: { "Content-Type": "application/json" },
-      ...options,
-    });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    return res.json();
+    const tries = [path];
+    // When opened from file:// or a non-app origin (e.g. preview), fall back to the local app server
+    if (!/^https?:\/\/127\.0\.0\.1:8765\//i.test(location.href) && !/^https?:\/\/localhost:8765\//i.test(location.href)) {
+      tries.push("http://127.0.0.1:8765" + path);
+    }
+    let lastErr = null;
+    for (const url of tries) {
+      try {
+        const res = await fetch(url, {
+          headers: { "Content-Type": "application/json" },
+          ...options,
+        });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        return await res.json();
+      } catch (e) {
+        lastErr = e;
+      }
+    }
+    throw lastErr || new Error("API unreachable");
   }
 
   function setTheme(dark) {
@@ -1916,7 +1929,7 @@
       fillResult(DEMO);
       if (!quiet) {
         log(`API 不可用（${e.message}），已载入演示数据`);
-        toast("未连接本地服务，当前为演示模式", "err");
+        toast("未连接本地服务：请用 http://127.0.0.1:8765 打开（勿用文件预览 / file://）", "err");
       }
       return state.data;
     }
@@ -2172,56 +2185,27 @@
       if (ak) body.api_key = ak;
       let report;
       if (state.demo) {
-        report = {
-          action: "route",
-          token: DEMO.env_token,
-          live_port: 52666,
-          base_url: "http://127.0.0.1:52666/v1",
-          model: model || "mimo-desktop/mimo-pro",
-          alias_updated: state.target === "hermes",
-          routed: true,
-          route_target: state.target,
-          models: DEMO.models,
-        };
-        if (state.target === "hermes") {
-          state.data = {
-            ...state.data,
-            linked: true,
-            alias_config: {
-              ...((state.data && state.data.alias_config) || DEMO.alias_config),
-              base_url: report.base_url,
-              model: report.model,
-            },
-          };
-        } else {
-          state.data = {
-            ...state.data,
-            codex_config: {
-              home: "~/.codex",
-              model_provider: "mimo-desktop",
-              model: report.model,
-              base_url: report.base_url,
-              wire_api: "chat",
-              has_api_key: true,
-            },
-          };
-        }
-        renderOverview(state.data);
+        toast("当前是演示模式，不会真正写入 Codex。请打开 http://127.0.0.1:8765", "err");
+        report = { action: "route", routed: false, error: "demo mode — server unreachable" };
       } else {
         report = await api("/api/route", { method: "POST", body: JSON.stringify(body) });
       }
       fillResult(report);
-      setRing(100, "已路由", report.error ? "err" : "ok");
-      setSteps(4);
-      log(`route 完成 · target=${report.route_target || state.target} · ${report.error ? "失败: " + report.error : "ok"}`);
-      toast(report.error ? report.error : `已自动路由至 ${report.route_target || targetLabel()}`, report.error ? "err" : "ok");
-      if (!report.error) {
+      if (report.error) {
+        setRing(100, "失败", "err");
+        log("route 失败: " + report.error);
+        toast(report.error, "err");
+      } else {
+        setRing(100, "已路由", "ok");
+        setSteps(4);
+        log(`route 完成 · target=${report.route_target || state.target}`);
+        toast(`已自动路由至 ${report.route_target || targetLabel()}`, "ok");
         await loadStatus({ quiet: true });
         await loadCodexFiles();
       }
     } catch (e) {
       log("route 异常: " + e.message);
-      toast("路由失败: " + e.message, "err");
+      toast("路由失败: " + e.message + " · 请确认服务在 127.0.0.1:8765", "err");
     } finally {
       btn.innerHTML = syncRouteLabel();
       btn.disabled = false;
