@@ -19,9 +19,19 @@ from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse
 
-APP_DIR = Path(__file__).resolve().parent
-PLUGIN_DIR = APP_DIR.parent
-if str(PLUGIN_DIR) not in sys.path:
+def _resolve_app_dir() -> Path:
+    if getattr(sys, "frozen", False):
+        base = Path(getattr(sys, "_MEIPASS", Path(sys.executable).resolve().parent))
+        for cand in (base / "app", base):
+            if (cand / "index.html").exists():
+                return cand
+        return base / "app"
+    return Path(__file__).resolve().parent
+
+
+APP_DIR = _resolve_app_dir()
+PLUGIN_DIR = APP_DIR.parent if not getattr(sys, "frozen", False) else APP_DIR
+if not getattr(sys, "frozen", False) and str(PLUGIN_DIR) not in sys.path:
     sys.path.insert(0, str(PLUGIN_DIR))
 
 from mimo_link_core import (  # noqa: E402
@@ -90,7 +100,18 @@ class Handler(SimpleHTTPRequestHandler):
         self.end_headers()
 
     def log_message(self, fmt: str, *args) -> None:
-        sys.stderr.write("[http] " + (fmt % args) + "\n")
+        # Windowed (PyInstaller) builds may have stderr=None — never crash the request.
+        try:
+            line = "[http] " + (fmt % args) + "\n"
+        except Exception:
+            return
+        for stream in (sys.stderr, sys.stdout):
+            if stream is not None:
+                try:
+                    stream.write(line)
+                    return
+                except Exception:
+                    continue
 
     def _json(self, code: int, payload: dict) -> None:
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")

@@ -47,7 +47,14 @@ ENV_FILE_NAME = "mimo-link.env"
 
 
 def data_dir() -> Path:
-    """Local data dir for mimo-link — never HERMES_HOME."""
+    """Local data dir for mimo-link — never HERMES_HOME.
+
+    Frozen (PyInstaller) builds keep state in %LOCALAPPDATA%/mimo-link so keys,
+    pricing and the engine token survive overwrites of the app folder.
+    """
+    if getattr(sys, "frozen", False):
+        base = Path(os.environ.get("LOCALAPPDATA") or (Path.home() / "AppData" / "Local"))
+        return base / "mimo-link"
     return PLUGIN_ROOT
 
 
