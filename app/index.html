@@ -1298,7 +1298,7 @@
             <select class="input" id="key-select" style="margin-top:8px;">
               <option value="">— 从受管 Key 选择（自动填入）—</option>
             </select>
-            <div class="hint">路由 / 导出时写入配置文件（Codex auth.json、Hermes .env、CC Switch api_key）。<span style="font-family:var(--mono)">mlk_</span> Key 走 :8765 桥接并计量；留空则使用引擎 Token。</div>
+            <div class="hint">路由 / 导出时写入目标配置（Codex auth.json、Hermes key_env）。<span style="font-family:var(--mono)">mlk_</span> Key 走 :8765 桥接并计量，写入 <span style="font-family:var(--mono)">MIMO_LINK_API_KEY</span>，<b>不会覆盖</b>引擎 Scoped Token；留空则使用引擎 Token。</div>
           </div>
 
           <div class="field">

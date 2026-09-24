@@ -1,0 +1,4 @@
+# Desktop shell (pywebview) + release packaging (PyInstaller)
+pywebview>=5.3
+pyinstaller>=6.0
+pillow>=10.0

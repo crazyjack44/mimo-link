@@ -38,6 +38,9 @@ from pathlib import Path
 ALIAS_NAME = "mimo-desktop"
 DEFAULT_MODEL = "mimo-desktop/mimo-v2.6-pro"
 ENV_KEY = "MIMO_LLM_SERVER_TOKEN"
+# Managed (mlk_) keys never overwrite the engine scoped token; they live here.
+MANAGED_ENV_KEY = "MIMO_LINK_API_KEY"
+MANAGED_KEY_PREFIX = "mlk_"
 TOKEN_LABEL = "hermes"
 PROC_NAME = "Xiaomi MiMo.exe"
 PROBE_TIMEOUT = 1.5
@@ -188,27 +191,48 @@ def find_endpoint(token: str, pids: list[int]) -> tuple[int | None, list[dict] |
 
 # --------------------------------------------------------------------------- token
 
-def read_env_token(home: Path | None = None) -> str:
-    """Read MIMO_LLM_SERVER_TOKEN from plugin-folder mimo-link.env (not HERMES_HOME)."""
+def _read_env_var(key: str) -> str:
     envp = env_file_path()
     if not envp.exists():
         return ""
     for line in envp.read_text(encoding="utf-8", errors="replace").splitlines():
-        if line.startswith(f"{ENV_KEY}="):
+        if line.startswith(f"{key}="):
             return line.split("=", 1)[1].strip()
     return ""
 
 
-def write_env_token(token: str, home: Path | None = None) -> None:
-    """Persist MIMO_LLM_SERVER_TOKEN into plugin-folder mimo-link.env."""
+def _write_env_var(key: str, token: str) -> None:
     envp = env_file_path()
     lines = []
     if envp.exists():
         lines = [l for l in envp.read_text(encoding="utf-8", errors="replace").splitlines()
-                 if not l.startswith(f"{ENV_KEY}=")]
-    lines.append(f"{ENV_KEY}={token}")
+                 if not l.startswith(f"{key}=")]
+    lines.append(f"{key}={token}")
     envp.parent.mkdir(parents=True, exist_ok=True)
     envp.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def read_env_token(home: Path | None = None) -> str:
+    """Read engine scoped token (MIMO_LLM_SERVER_TOKEN) from plugin-folder mimo-link.env."""
+    return _read_env_var(ENV_KEY)
+
+
+def write_env_token(token: str, home: Path | None = None) -> None:
+    """Persist the engine scoped token only. Never used for managed mlk_ keys."""
+    _write_env_var(ENV_KEY, token)
+
+
+def read_managed_key() -> str:
+    return _read_env_var(MANAGED_ENV_KEY)
+
+
+def write_managed_key(token: str) -> None:
+    """Persist a managed mlk_ key separately from the engine scoped token."""
+    _write_env_var(MANAGED_ENV_KEY, token)
+
+
+def is_managed_key(token: str | None) -> bool:
+    return bool((token or "").strip().startswith(MANAGED_KEY_PREFIX))
 
 
 def mint_token(install_dir: Path) -> dict:
@@ -294,14 +318,14 @@ def read_alias() -> dict:
     return entry
 
 
-def write_alias(model: str, base_url: str) -> None:
+def write_alias(model: str, base_url: str, key_env: str = ENV_KEY) -> None:
     exe = _hermes_bin()
     if not exe:
         raise RuntimeError(
             "`hermes` not found on PATH — 仅「路由至 Hermes」需要它；"
             "Codex / 同步 / Key 不依赖 Hermes")
     payload = json.dumps({"model": model, "provider": "custom",
-                          "base_url": base_url, "key_env": ENV_KEY})
+                          "base_url": base_url, "key_env": key_env})
     subprocess.run([exe, "config", "set", f"model_aliases.{ALIAS_NAME}", payload],
                    capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120)
 
@@ -802,7 +826,10 @@ def run_action(
         if route_target == "codex":
             new_base = bridge_url()  # never write the raw MiMo port into Codex
             # Prefer user-supplied managed key (mlk_) so traffic is metered
-            write_token = (api_key or "").strip() or token
+            supplied = (api_key or "").strip()
+            write_token = supplied or token
+            if is_managed_key(supplied):
+                write_managed_key(supplied)
             try:
                 codex_info = write_codex_config(new_base, new_model, write_token)
             except Exception as e:
@@ -818,7 +845,8 @@ def run_action(
                 "routed": True,
                 "route_target": "codex",
                 "wire_api": "responses",
-                "config_key": write_token if (api_key or "").strip() else None,
+                "config_key": write_token if supplied else None,
+                "engine_token": mask(token),
                 "codex": codex_info,
                 "models": [m.get("id") for m in models] if models else [],
             })
@@ -828,25 +856,41 @@ def run_action(
             result["error"] = f"unknown target {route_target!r} (use hermes|codex)"
             return result
 
-        write_token = (api_key or "").strip() or token
-        if route_target == "hermes":
-            if not hermes_available():
-                result["error"] = (
-                    "`hermes` not found on PATH — 无法路由到 Hermes。"
-                    "可改选「Codex」，或安装 hermes CLI。同步 / Key / Codex 均不依赖 Hermes。")
-                return result
-            if (api_key or "").strip():
-                write_env_token(write_token, home)
-            write_alias(new_model, new_base)
+        supplied = (api_key or "").strip()
+        if not hermes_available():
+            result["error"] = (
+                "`hermes` not found on PATH — 无法路由到 Hermes。"
+                "可改选「Codex」，或安装 hermes CLI。同步 / Key / Codex 均不依赖 Hermes。")
+            return result
+        # Engine scoped token is the root credential and must never be replaced
+        # by a managed mlk_ key. Managed keys go through the :8765 bridge.
+        if is_managed_key(supplied):
+            write_managed_key(supplied)
+            write_token = supplied
+            new_base = bridge_url()
+            key_env = MANAGED_ENV_KEY
+        elif supplied:
+            write_managed_key(supplied)
+            write_token = supplied
+            new_base = f"http://127.0.0.1:{port}/v1"
+            key_env = MANAGED_ENV_KEY
+        else:
+            write_token = token
+            new_base = f"http://127.0.0.1:{port}/v1"
+            key_env = ENV_KEY
+        write_alias(new_model, new_base, key_env=key_env)
         result.update({
             "token": mask(write_token),
             "live_port": port,
+            "upstream_base": upstream_base,
             "base_url": new_base,
             "model": new_model,
             "alias_updated": True,
             "routed": True,
             "route_target": "hermes",
-            "config_key": write_token if (api_key or "").strip() else None,
+            "key_env": key_env,
+            "config_key": write_token if supplied else None,
+            "engine_token": mask(token),
             "models": [m.get("id") for m in models] if models else [],
         })
         return result
@@ -872,17 +916,23 @@ def run_action(
         if fmt not in ("hermes", "codex"):
             result["error"] = f"unknown export format {fmt!r} (use hermes|codex)"
             return result
-        write_token = (api_key or "").strip() or token
-        new_base = bridge_url() if fmt == "codex" else f"http://127.0.0.1:{port}/v1"
+        supplied = (api_key or "").strip()
+        write_token = supplied or token
+        if fmt == "codex" or is_managed_key(supplied):
+            new_base = bridge_url()
+        else:
+            new_base = f"http://127.0.0.1:{port}/v1"
         cfg = build_cc_switch_config(write_token, new_base, new_model, models, target=fmt)
         result.update({
             "token": mask(write_token),
             "live_port": port,
+            "upstream_base": f"http://127.0.0.1:{port}/v1",
             "base_url": new_base,
             "model": new_model,
             "config_format": "cc-switch",
             "export_format": fmt,
-            "config_key": write_token if (api_key or "").strip() else None,
+            "config_key": write_token if supplied else None,
+            "engine_token": mask(token),
             "config": cfg,
             "models": [m.get("id") for m in models] if models else [],
         })
