@@ -334,6 +334,29 @@ def build_codex_config_toml(base_url: str, model: str) -> str:
     )
 
 
+def build_codex_auth_json(token: str) -> str:
+    """CC Switch Codex auth.json body (import into CC Switch)."""
+    return json.dumps({"OPENAI_API_KEY": token}, ensure_ascii=False, indent=2) + "\n"
+
+
+def build_cc_switch_codex_files(
+    token: str,
+    model: str,
+    base_url: str | None = None,
+) -> dict:
+    """Standard CC Switch Codex import pair (NOT the live ~/.codex files)."""
+    base = base_url or bridge_url()
+    return {
+        "format": "cc-switch-codex",
+        "base_url": base,
+        "model": model,
+        "wire_api": "responses",
+        "config_toml": build_codex_config_toml(base, model),
+        "auth_json": build_codex_auth_json(token),
+        "note": "CC Switch 导入用标准 config.toml / auth.json（非本机 ~/.codex 实时文件）",
+    }
+
+
 def _parse_simple_toml(text: str) -> tuple[list[str], dict[str, list[str]]]:
     """Split TOML into top-level lines and {section_name: body_lines} (headers dropped)."""
     top: list[str] = []

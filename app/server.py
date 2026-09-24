@@ -25,7 +25,9 @@ if str(PLUGIN_DIR) not in sys.path:
     sys.path.insert(0, str(PLUGIN_DIR))
 
 from mimo_link_core import (  # noqa: E402
+    DEFAULT_MODEL,
     _PREPARED,
+    build_cc_switch_codex_files,
     data_dir,
     discover_install_dir,
     env_file_path,
@@ -186,6 +188,28 @@ class Handler(SimpleHTTPRequestHandler):
                     self._json(404, {"error": "no token — run sync first"})
                     return True
                 self._json(200, {"token": token})
+                return True
+
+            # Generated CC Switch Codex pair (for import) — not live ~/.codex
+            if path in ("/api/codex-cc-switch", "/api/codex_cc_switch") and self.command in ("GET", "POST"):
+                qs = {}
+                parsed = urlparse(self.path)
+                if parsed.query:
+                    from urllib.parse import parse_qs
+                    qs = {k: v[0] for k, v in parse_qs(parsed.query).items()}
+                body = self._read_body() if self.command == "POST" else {}
+                model = body.get("model") or qs.get("model") or None
+                api_key = body.get("api_key") or body.get("key") or qs.get("api_key") or None
+                token = (api_key or "").strip() or read_env_token() or get_plain_token() or ""
+                if not model:
+                    alias = (run_action("status").get("alias_config") or {})
+                    model = alias.get("model") or DEFAULT_MODEL
+                try:
+                    files = build_cc_switch_codex_files(token, model)
+                    files["mask"] = mask(token)
+                    self._json(200, files)
+                except Exception as e:
+                    self._json(500, {"error": str(e)})
                 return True
 
             # Unified engine scoped token (MIMO_LLM_SERVER_TOKEN) — root credential

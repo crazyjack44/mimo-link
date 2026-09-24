@@ -1261,16 +1261,20 @@
 
         <div class="card">
           <div class="section-head">
-            <h2 class="section-title">Codex 配置文件</h2>
+            <h2 class="section-title">Codex 导入配置（CC Switch）</h2>
             <button class="btn btn-secondary" id="reload-codex-files">刷新</button>
           </div>
-          <div class="hint" style="margin-bottom:12px;">读取 <span style="font-family:var(--mono)">~/.codex</span> 当前文件 · Codex 应使用桥接 <span style="font-family:var(--mono)">http://127.0.0.1:8765/v1</span>（非 52666）· 可复制</div>
+          <div class="hint" style="margin-bottom:12px;">
+            下方为<strong>程序生成的标准 CC Switch</strong> <span style="font-family:var(--mono)">config.toml</span> /
+            <span style="font-family:var(--mono)">auth.json</span>，复制后可在 <b>CC Switch</b> 导入。
+            <b>不是</b>本机 <span style="font-family:var(--mono)">~/.codex</span> 实时文件。
+          </div>
 
           <div class="file-panel">
             <div class="file-panel-head">
               <div>
                 <div class="file-panel-title">config.toml</div>
-                <div class="file-meta" id="codex-config-path">—</div>
+                <div class="file-meta" id="codex-config-path">CC Switch · Codex provider config</div>
               </div>
               <button class="copy-btn" id="copy-config-toml" title="复制 config.toml" aria-label="复制 config.toml">
                 <svg viewBox="0 0 24 24" id="copy-config-icon">
@@ -1286,7 +1290,7 @@
             <div class="file-panel-head">
               <div>
                 <div class="file-panel-title">auth.json</div>
-                <div class="file-meta" id="codex-auth-path">—</div>
+                <div class="file-meta" id="codex-auth-path">CC Switch · Codex provider auth</div>
               </div>
               <button class="copy-btn" id="copy-auth-json" title="复制 auth.json" aria-label="复制 auth.json">
                 <svg viewBox="0 0 24 24" id="copy-auth-icon">
@@ -1833,19 +1837,29 @@
 
   async function loadCodexFiles() {
     try {
-      const d = await api("/api/codex-files");
-      $("codex-config-path").textContent = d.config_path || "~/.codex/config.toml";
-      $("codex-auth-path").textContent = d.auth_path || "~/.codex/auth.json";
+      const model = ($("model-input") && $("model-input").value.trim()) || null;
+      const ak = currentApiKey();
+      const body = {};
+      if (model) body.model = model;
+      if (ak) body.api_key = ak;
+      const d = await api("/api/codex-cc-switch", {
+        method: "POST",
+        body: JSON.stringify(body),
+      });
+      $("codex-config-path").textContent =
+        `CC Switch 导入 · model=${d.model || "—"} · ${d.base_url || ""}`;
+      $("codex-auth-path").textContent =
+        `CC Switch 导入 · key=${d.mask || "—"}（OPENAI_API_KEY）`;
       $("codex-config-toml").textContent = d.config_toml || "";
       $("codex-auth-json").textContent = d.auth_json || "";
       return d;
     } catch (e) {
       if (state.demo) {
-        $("codex-config-path").textContent = "~/.codex/config.toml";
-        $("codex-auth-path").textContent = "~/.codex/auth.json";
+        $("codex-config-path").textContent = "CC Switch 导入 · demo";
+        $("codex-auth-path").textContent = "CC Switch 导入 · demo";
         $("codex-config-toml").textContent =
           'model_provider = "mimo-desktop"\nmodel = "mimo-desktop/mimo-pro"\ndisable_response_storage = true\n\n[model_providers.mimo-desktop]\nname = "MiMo Desktop"\nbase_url = "http://127.0.0.1:8765/v1"\nwire_api = "responses"\nrequires_openai_auth = true\n';
-        $("codex-auth-json").textContent = '{\n  "OPENAI_API_KEY": "demo-token-not-real"\n}';
+        $("codex-auth-json").textContent = '{\n  "OPENAI_API_KEY": "demo-token-not-real"\n}\n';
       } else {
         $("codex-config-toml").textContent = "";
         $("codex-auth-json").textContent = "";
@@ -1866,8 +1880,8 @@
     try {
       await copyText(text);
       flashCopyBtn(btn, icon);
-      toast(isConfig ? "已复制 config.toml" : "已复制 auth.json", "ok");
-      log(isConfig ? "config.toml 已复制" : "auth.json 已复制");
+      toast(isConfig ? "已复制 CC Switch config.toml" : "已复制 CC Switch auth.json", "ok");
+      log(isConfig ? "CC Switch config.toml 已复制" : "CC Switch auth.json 已复制");
     } catch (e) {
       toast("复制失败: " + e.message, "err");
     }
@@ -2460,7 +2474,7 @@
   $("copy-auth-json").addEventListener("click", () => copyFileField("auth"));
   $("reload-codex-files").addEventListener("click", async () => {
     await loadCodexFiles();
-    toast("已刷新 Codex 配置文件", "ok");
+    toast("已刷新 CC Switch 导入配置", "ok");
   });
   $("run-status").addEventListener("click", async () => {
     const d = await loadStatus();
