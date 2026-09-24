@@ -41,24 +41,6 @@ python app/server.py --port 8765 --open
 
 **建议顺序**：先在「同步」页生成 **统一 scoped token** → 再生成 API Key → ① 同步端点 → ② 路由至 Hermes / Codex。启动和同步都**不会**自动改配置，必须自己点「路由」。
 
-## 桌面版（pywebview · 用于 Release）
-
-不想开浏览器的话，可以打成原生窗口程序（内部仍是同一套 UI + 本机服务）：
-
-```powershell
-python -m venv .venv
-.\.venv\Scripts\pip install -r requirements-desktop.txt
-
-# 开发时直接弹窗运行
-.\.venv\Scripts\python app\desktop.py
-
-# 打 Windows 发布包 → dist\MiMoLink\MiMoLink.exe
-.\.venv\Scripts\python app\build_desktop.py
-```
-
-把 `dist\MiMoLink\` 整个文件夹打成 zip 挂到 GitHub Release 即可。  
-界面基于系统 WebView2，无需再装 Chrome。Key / 定价等数据存在 `%LOCALAPPDATA%\mimo-link\`，不会跟着 exe 被覆盖。
-
 ## 路由到哪
 
 | 目标 | 做了什么 |
