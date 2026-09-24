@@ -1,0 +1,8 @@
+name: mimo-link
+version: 1.0.0
+description: Link Xiaomi MiMo Desktop's capability API into Hermes as the `mimo-desktop` model alias (keeps its drifting port and scoped token in sync).
+author: local
+license: MIT
+tags: [mimo, xiaomi, providers, model-alias]
+provides_tools:
+  - mimo_link

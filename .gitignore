@@ -1,0 +1,19 @@
+# secrets / local state
+mimo-link.env
+mimo-link-keys.json
+mimo-link-pricing.json
+*.tmp
+*.bak
+*.mimo-link.bak
+
+# python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# os / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
