@@ -214,13 +214,34 @@ def _write_env_var(key: str, token: str) -> None:
     envp.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
+def is_managed_key(token: str | None) -> bool:
+    return bool((token or "").strip().startswith(MANAGED_KEY_PREFIX))
+
+
 def read_env_token(home: Path | None = None) -> str:
-    """Read engine scoped token (MIMO_LLM_SERVER_TOKEN) from plugin-folder mimo-link.env."""
-    return _read_env_var(ENV_KEY)
+    """Read engine scoped token (MIMO_LLM_SERVER_TOKEN) from plugin-folder mimo-link.env.
+
+    A managed `mlk_` key must never live in this slot — if one leaked in
+    (older builds wrote route keys here), treat the slot as empty and migrate
+    the value to MIMO_LINK_API_KEY so sync can mint a real engine token.
+    """
+    raw = _read_env_var(ENV_KEY)
+    if not raw:
+        return ""
+    if is_managed_key(raw):
+        if not _read_env_var(MANAGED_ENV_KEY):
+            _write_env_var(MANAGED_ENV_KEY, raw)
+        _write_env_var(ENV_KEY, "")
+        return ""
+    return raw
 
 
 def write_env_token(token: str, home: Path | None = None) -> None:
     """Persist the engine scoped token only. Never used for managed mlk_ keys."""
+    token = (token or "").strip()
+    if is_managed_key(token):
+        write_managed_key(token)
+        return
     _write_env_var(ENV_KEY, token)
 
 
@@ -230,11 +251,7 @@ def read_managed_key() -> str:
 
 def write_managed_key(token: str) -> None:
     """Persist a managed mlk_ key separately from the engine scoped token."""
-    _write_env_var(MANAGED_ENV_KEY, token)
-
-
-def is_managed_key(token: str | None) -> bool:
-    return bool((token or "").strip().startswith(MANAGED_KEY_PREFIX))
+    _write_env_var(MANAGED_ENV_KEY, (token or "").strip())
 
 
 def is_hidden_model(model_id: str | None) -> bool:
@@ -694,22 +711,16 @@ def _ensure_endpoint(
     if not directory:
         return ({"error": "could not locate the MiMo install dir — pass --dir"}, "", 0, None)
 
+    # read_env_token migrates a leaked mlk_ key out of the engine slot, so this
+    # is either a real engine token or empty (then mint below).
     token = read_env_token(home)
     token_state = "kept" if token else "minted"
     if not token:
-        if not install_dir:
-            return ({"error": (
-                "no token in .env and MiMo install dir not auto-detected — "
-                "pass --dir <MiMo install dir> so the token can be minted")}, "", 0, None)
         token = mint_token(directory)["api_key"]
         write_env_token(token, home)
 
     port, models = find_endpoint(token, pids)
-    if not port:  # stale/revoked token: mint a fresh one and retry
-        if not install_dir:
-            return ({"error": (
-                "existing token is rejected and install dir not auto-detected — "
-                "pass --dir <MiMo install dir> to mint a fresh token")}, "", 0, None)
+    if not port:  # stale/revoked/rejected token: mint a fresh one and retry
         token = mint_token(directory)["api_key"]
         write_env_token(token, home)
         token_state = "reminted"
