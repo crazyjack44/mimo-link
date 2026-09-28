@@ -10,6 +10,16 @@ if not defined PYTHON (
   pause
   exit /b 1
 )
+
+rem Free leftover listener on 8765 (orphaned after closing the console window).
+echo Checking port 8765...
+for /f "tokens=5" %%p in ('netstat -ano -p TCP ^| findstr /R /C:":8765 .*LISTENING"') do (
+  echo Killing leftover process PID %%p on port 8765
+  taskkill /PID %%p /T /F >nul 2>&1
+)
+
 echo Starting MiMo Link...
 "%PYTHON%" "%~dp0server.py" --open
-pause
+echo.
+echo MiMo Link exited. Press any key to close this window.
+pause >nul

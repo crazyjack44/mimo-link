@@ -29,6 +29,7 @@ for p in (str(ROOT_DIR), str(APP_DIR)):
         sys.path.insert(0, p)
 
 from server import Handler  # noqa: E402
+from server import free_port  # noqa: E402
 from http.server import ThreadingHTTPServer  # noqa: E402
 
 DEFAULT_PORT = 8765
@@ -69,8 +70,9 @@ def start_server(port: int = DEFAULT_PORT) -> mp.Process | None:
     window creation and starve the HTTP server.
     """
     if _port_open("127.0.0.1", port):
-        _log(f"port {port} already open — reuse existing server")
-        return None
+        # Leftover listener from a closed console — kill it and bind fresh.
+        _log(f"port {port} busy — freeing leftover listener")
+        free_port("127.0.0.1", port)
     proc = mp.Process(target=_serve_forever, args=(port,), daemon=True)
     proc.start()
     for _ in range(40):

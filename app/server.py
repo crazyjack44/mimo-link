@@ -12,8 +12,10 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import subprocess
 import sys
 import threading
+import time
 import webbrowser
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -607,9 +609,83 @@ class Handler(SimpleHTTPRequestHandler):
         self._json(404, {"error": "not found"})
 
 
+def _port_in_use(host: str, port: int) -> bool:
+    import socket
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.settimeout(0.35)
+        return s.connect_ex((host, port)) == 0
+
+
+def _listening_pids(port: int) -> list[int]:
+    """PIDs listening on 127.0.0.1:port (or any:port) on Windows."""
+    if os.name != "nt":
+        return []
+    try:
+        out = subprocess.run(
+            ["netstat", "-ano", "-p", "TCP"],
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=15,
+        ).stdout
+    except Exception:
+        return []
+    pids: set[int] = set()
+    me = os.getpid()
+    for line in out.splitlines():
+        parts = line.split()
+        # TCP  127.0.0.1:8765  0.0.0.0:0  LISTENING  12345
+        if len(parts) < 5 or parts[0].upper() != "TCP":
+            continue
+        if parts[3].upper() != "LISTENING":
+            continue
+        local = parts[1]
+        if not local.endswith(f":{port}"):
+            continue
+        try:
+            pid = int(parts[4])
+        except ValueError:
+            continue
+        if pid and pid != me:
+            pids.add(pid)
+    return sorted(pids)
+
+
+def free_port(host: str, port: int, timeout: float = 3.0) -> bool:
+    """Kill leftover listeners on host:port so a new server can bind.
+
+    Closing the console window without Ctrl+C can orphan a previous
+    python server.py — next start then fails or silently reuses it.
+    """
+    if not _port_in_use(host, port):
+        return True
+    pids = _listening_pids(port)
+    for pid in pids:
+        for cmd in (
+            ["taskkill", "/PID", str(pid), "/T", "/F"],
+            ["taskkill", "/PID", str(pid), "/F"],
+        ):
+            try:
+                subprocess.run(cmd, capture_output=True, timeout=10)
+                break
+            except Exception:
+                continue
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if not _port_in_use(host, port):
+            return True
+        time.sleep(0.15)
+    return not _port_in_use(host, port)
+
+
 def serve(port: int, open_browser: bool) -> None:
-    httpd = ThreadingHTTPServer(("127.0.0.1", port), Handler)
-    url = f"http://127.0.0.1:{port}"
+    host = "127.0.0.1"
+    if _port_in_use(host, port):
+        pids = _listening_pids(port)
+        print(f"port {port} is busy (pids={pids or '?'}) — freeing leftover listener…")
+        if not free_port(host, port):
+            print(f"failed to free port {port}; close the old MiMo Link / python process and retry.", file=sys.stderr)
+            raise SystemExit(1)
+        print(f"port {port} freed")
+    httpd = ThreadingHTTPServer((host, port), Handler)
+    url = f"http://{host}:{port}"
     print(f"MiMo Link running at {url}")
     print("Ctrl+C to quit.")
     if open_browser:
